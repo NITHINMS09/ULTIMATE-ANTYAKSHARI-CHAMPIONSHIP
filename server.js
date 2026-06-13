@@ -37,6 +37,7 @@ app.post('/api/transcribe', upload.single('audio'), async (req, res) => {
 
   const apiKey = process.env.OPENAI_API_KEY;
   const targetLetter = req.query.letter || '';
+  const language = req.query.language || '';
   
   if (!apiKey) {
     console.warn('[API] OpenAI API key is missing. Executing mock transcription fallback.');
@@ -94,8 +95,34 @@ app.post('/api/transcribe', upload.single('audio'), async (req, res) => {
     formData.append('file', audioBlob, 'recording.webm');
     formData.append('model', 'whisper-1');
 
+    // Build enhanced prompt with target letter and language hints
+    let promptText = '';
     if (targetLetter) {
-      formData.append('prompt', `This song must start with the letter ${targetLetter.toUpperCase()}`);
+      promptText += `This song must start with the letter ${targetLetter.toUpperCase()}. `;
+    }
+    if (language && language !== 'all') {
+      promptText += `The song is sung in the ${language} language. `;
+    }
+    if (promptText) {
+      formData.append('prompt', promptText.trim());
+    }
+
+    // Set ISO 639-1 language code parameter if specific language is provided
+    if (language && language !== 'all') {
+      const langMap = {
+        kannada: 'kn',
+        malayalam: 'ml',
+        tamil: 'ta',
+        telugu: 'te',
+        hindi: 'hi',
+        english: 'en',
+        punjabi: 'pa',
+        bengali: 'bn'
+      };
+      const isoCode = langMap[language.toLowerCase()];
+      if (isoCode) {
+        formData.append('language', isoCode);
+      }
     }
 
     const response = await fetch('https://api.openai.com/v1/audio/transcriptions', {
@@ -125,15 +152,165 @@ app.post('/api/transcribe', upload.single('audio'), async (req, res) => {
   }
 });
 
-/* ── 2. YouTube Search Endpoint ────────────────────────────── */
-app.post('/api/youtube-search', async (req, res) => {
-  const { query } = req.body;
-  console.log(`[API] YouTube search query: "${query}"`);
-
-  if (!query) {
-    return res.status(400).json({ error: 'Search query is required.' });
+/* ── 2. Google Speech API Proxy Endpoint ───────────────────── */
+app.post('/api/google-speech', upload.single('audio'), async (req, res) => {
+  console.log('[API] Google Speech Proxy request received.');
+  
+  if (!req.file) {
+    return res.status(400).json({ error: 'No audio file uploaded.' });
   }
 
+  const apiKey = process.env.GOOGLE_API_KEY;
+  const language = req.query.language || 'hi-IN';
+
+  if (!apiKey) {
+    console.warn('[API] Google API key is missing. Executing mock speech fallback.');
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    return res.json({ text: 'Kesariya', confidence: 0.92, mode: 'mock_fallback' });
+  }
+
+  try {
+    const audioContent = req.file.buffer.toString('base64');
+    const requestPayload = {
+      config: {
+        encoding: 'WEBM_OPUS',
+        sampleRateHertz: 48000,
+        languageCode: language,
+        alternativeLanguageCodes: ['kn-IN', 'ml-IN', 'ta-IN', 'te-IN', 'en-IN', 'pa-IN', 'bn-IN']
+      },
+      audio: {
+        content: audioContent
+      }
+    };
+
+    const response = await fetch(`https://speech.googleapis.com/v1/speech:recognize?key=${apiKey}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(requestPayload)
+    });
+
+    if (!response.ok) {
+      const errText = await response.text();
+      throw new Error(`Google Speech API returned status ${response.status}: ${errText}`);
+    }
+
+    const data = await response.json();
+    const result = data.results?.[0]?.alternatives?.[0];
+    
+    if (result) {
+      console.log(`[API] Google Speech Proxy result: "${result.transcript}" (confidence: ${result.confidence})`);
+      return res.json({
+        text: result.transcript,
+        confidence: result.confidence || 0.8,
+        mode: 'google_speech_api'
+      });
+    } else {
+      return res.json({ text: '', confidence: 0, mode: 'google_speech_api' });
+    }
+  } catch (error) {
+    console.error('[API] Google Speech Proxy failed:', error);
+    return res.status(500).json({ error: 'Google Speech Proxy failed', details: error.message });
+  }
+});
+
+/* ── 3. MusicBrainz Search Endpoint ─────────────────────────── */
+app.post('/api/musicbrainz-search', async (req, res) => {
+  const { title, artist } = req.body;
+  if (!title) {
+    return res.status(400).json({ error: 'Title is required' });
+  }
+  
+  try {
+    let url = `https://musicbrainz.org/ws/2/recording?query=recording:${encodeURIComponent(title)}`;
+    if (artist) {
+      url += `%20AND%20artist:${encodeURIComponent(artist)}`;
+    }
+    url += '&fmt=json';
+
+    console.log(`[MusicBrainz] Querying API: ${url}`);
+    const response = await fetch(url, {
+      headers: {
+        'User-Agent': 'UltimateAntyakshariChampionship/1.0.0 (appup@example.com)'
+      }
+    });
+
+    if (!response.ok) {
+      throw new Error(`MusicBrainz API responded with status ${response.status}`);
+    }
+
+    const data = await response.json();
+    const recordings = data.recordings || [];
+    
+    // Format response
+    const results = recordings.slice(0, 5).map(rec => ({
+      id: rec.id,
+      title: rec.title,
+      artist: rec['artist-credit']?.map(ac => ac.name).join(', ') || 'Unknown Artist',
+      album: rec.releases?.[0]?.title || '',
+      score: rec.score
+    }));
+
+    return res.json({ recordings: results });
+  } catch (error) {
+    console.error('[MusicBrainz] Search failed:', error);
+    return res.status(500).json({ error: 'MusicBrainz search failed', details: error.message });
+  }
+});
+
+/* ── 4. Corrections Storage Endpoint ───────────────────────── */
+const CORRECTIONS_FILE = path.join(__dirname, 'corrections.json');
+
+app.get('/api/corrections', (req, res) => {
+  try {
+    if (fs.existsSync(CORRECTIONS_FILE)) {
+      const data = fs.readFileSync(CORRECTIONS_FILE, 'utf8');
+      return res.json(JSON.parse(data));
+    }
+    return res.json([]);
+  } catch (error) {
+    console.error('[API] Failed to read corrections:', error);
+    return res.status(500).json({ error: 'Failed to read corrections' });
+  }
+});
+
+app.post('/api/corrections', (req, res) => {
+  const { wrongText, correctTitle, artist, movie, language } = req.body;
+  if (!wrongText || !correctTitle) {
+    return res.status(400).json({ error: 'wrongText and correctTitle are required' });
+  }
+
+  try {
+    let corrections = [];
+    if (fs.existsSync(CORRECTIONS_FILE)) {
+      const data = fs.readFileSync(CORRECTIONS_FILE, 'utf8');
+      corrections = JSON.parse(data);
+    }
+
+    const newCorrection = {
+      id: Date.now().toString(),
+      wrongText: wrongText.toLowerCase().trim(),
+      correctTitle: correctTitle.trim(),
+      artist: artist || '',
+      movie: movie || '',
+      language: language || '',
+      timestamp: Date.now()
+    };
+
+    corrections.push(newCorrection);
+    fs.writeFileSync(CORRECTIONS_FILE, JSON.stringify(corrections, null, 2), 'utf8');
+    
+    console.log(`[API] Saved server-side correction: "${wrongText}" -> "${correctTitle}"`);
+    return res.json({ success: true, correction: newCorrection });
+  } catch (error) {
+    console.error('[API] Failed to save correction:', error);
+    return res.status(500).json({ error: 'Failed to save correction' });
+  }
+});
+
+/* ── 5. YouTube Search Endpoint ────────────────────────────── */
+async function searchYouTubeHelper(query) {
   const apiKey = process.env.YOUTUBE_API_KEY;
 
   if (apiKey) {
@@ -152,7 +329,7 @@ app.post('/api/youtube-search', async (req, res) => {
       
       if (videoId) {
         console.log(`[API] YouTube match found: ${videoId}`);
-        return res.json({ videoId });
+        return { videoId };
       }
     } catch (err) {
       console.warn('[API] Official YouTube Search failed. Trying scraper fallback...', err);
@@ -160,7 +337,6 @@ app.post('/api/youtube-search', async (req, res) => {
   }
 
   // Scraper Fallback: Scrape the YouTube search HTML to extract first video ID.
-  // This is highly reliable for dev/localhost testing without API quota blocks.
   try {
     console.log('[API] Fetching YouTube search page (HTML Scraper Fallback)...');
     const searchUrl = `https://www.youtube.com/results?search_query=${encodeURIComponent(query)}`;
@@ -177,27 +353,75 @@ app.post('/api/youtube-search', async (req, res) => {
 
     const html = await response.text();
     
-    // Find video IDs from script tags using regex: /watch\?v=([a-zA-Z0-9_-]{11})/
+    // Find video IDs from script tags using regex
     const videoMatches = [...html.matchAll(/\/watch\?v=([a-zA-Z0-9_-]{11})/g)];
     
     if (videoMatches && videoMatches.length > 0) {
-      // Clean up duplicates and filter out noise
       const videoIds = videoMatches.map(m => m[1]);
-      // First video ID
       const targetVideoId = videoIds[0];
       console.log(`[API] Scraper matched YouTube video ID: ${targetVideoId}`);
-      return res.json({ videoId: targetVideoId });
+      return { videoId: targetVideoId };
     }
 
     console.warn('[API] Scraper could not match video ID. Returning mock ID.');
-    // Return standard music video ID (e.g. Rickroll or a generic audio block)
-    return res.json({ videoId: 'dQw4w9WgXcQ', mode: 'rickroll_mock' });
+    return { videoId: 'dQw4w9WgXcQ', mode: 'rickroll_mock' };
 
   } catch (error) {
     console.error('[API] Scraper YouTube search failed:', error);
-    // Return mock ID so the app never crashes
-    return res.json({ videoId: 'dQw4w9WgXcQ', mode: 'rickroll_mock' });
+    return { videoId: 'dQw4w9WgXcQ', mode: 'rickroll_mock' };
   }
+}
+
+app.post('/api/youtube-search', async (req, res) => {
+  const { query } = req.body;
+  console.log(`[API] YouTube search query: "${query}"`);
+
+  if (!query) {
+    return res.status(400).json({ error: 'Search query is required.' });
+  }
+
+  const result = await searchYouTubeHelper(query);
+  return res.json(result);
+});
+
+/* ── 6. Batch Song Validation Endpoint ──────────────────────── */
+app.post('/api/validate-songs', async (req, res) => {
+  const { songs } = req.body;
+  if (!Array.isArray(songs)) {
+    return res.status(400).json({ error: 'Songs array is required' });
+  }
+
+  console.log(`[API] Batch validating ${songs.length} songs...`);
+  const results = [];
+
+  for (const song of songs) {
+    const query = `${song.title} ${song.artist || ''} official audio`.trim();
+    let ytStatus = 'skipped';
+    let videoId = '';
+
+    try {
+      const ytRes = await searchYouTubeHelper(query);
+      if (ytRes.videoId) {
+        ytStatus = 'valid';
+        videoId = ytRes.videoId;
+      } else {
+        ytStatus = 'invalid';
+      }
+    } catch (e) {
+      ytStatus = 'error';
+    }
+
+    results.push({
+      id: song.id,
+      title: song.title,
+      artist: song.artist,
+      youtubeStatus: ytStatus,
+      videoId,
+      timestamp: Date.now()
+    });
+  }
+
+  return res.json({ results });
 });
 
 /* ── 3. Serve Built Production Frontend Assets ───────────────── */

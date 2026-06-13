@@ -5,6 +5,8 @@ import {
 } from 'lucide-react';
 import { syncEngine } from '../../engine/SyncEngine';
 import db from '../../db/database';
+import { songRecognitionEngine } from '../../engine/SongRecognitionEngine.js';
+import { LearningEngine } from '../../engine/LearningEngine.js';
 
 export default function DebugPanel({ isOpen, onClose }) {
   const [micStatus, setMicStatus] = useState('unknown');
@@ -13,6 +15,8 @@ export default function DebugPanel({ isOpen, onClose }) {
   const [ytPlayerStatus, setYtPlayerStatus] = useState('unloaded');
   const [dbStatus, setDbStatus] = useState('connected');
   const [logs, setLogs] = useState([]);
+  const [pipelineState, setPipelineState] = useState(null);
+  const [learningStats, setLearningStats] = useState(null);
 
   // Load diagnostic states and subscribe to events
   useEffect(() => {
@@ -57,9 +61,24 @@ export default function DebugPanel({ isOpen, onClose }) {
     // Add initial log
     addLog('Developer diagnostics engine initialized.');
 
+    // 5. Poll engine state periodically when panel is open
+    const pollTimer = setInterval(() => {
+      if (songRecognitionEngine.isActive) {
+        setPipelineState(songRecognitionEngine.getState());
+      } else {
+        setPipelineState(null);
+      }
+    }, 500);
+
+    // 6. Fetch learning engine stats
+    LearningEngine.getAccuracyStats().then(stats => {
+      setLearningStats(stats);
+    }).catch(() => {});
+
     return () => {
       unsubWs();
       unsubLog();
+      clearInterval(pollTimer);
     };
   }, []);
 
@@ -117,7 +136,7 @@ export default function DebugPanel({ isOpen, onClose }) {
       bottom: '24px',
       right: '24px',
       width: '380px',
-      height: '460px',
+      height: '600px',
       background: 'rgba(10, 10, 26, 0.95)',
       border: '1px solid rgba(124, 58, 237, 0.3)',
       borderRadius: 'var(--radius-xl)',
@@ -249,7 +268,67 @@ export default function DebugPanel({ isOpen, onClose }) {
             </button>
           </div>
         </div>
+
+        {/* Learning Stats */}
+        {learningStats && (
+          <div style={{
+            padding: '8px',
+            background: 'rgba(245, 158, 11, 0.02)',
+            borderRadius: '6px',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '8px',
+            gridColumn: 'span 2'
+          }}>
+            <Cpu size={14} style={{ color: 'var(--warning-400)' }} />
+            <div style={{ fontSize: '10px', display: 'flex', justifyContent: 'space-between', width: '100%' }}>
+              <div>
+                <span style={{ color: 'var(--text-muted)' }}>AI Learning Stats: </span>
+                <span style={{ fontWeight: 'bold', color: 'var(--warning-400)' }}>{learningStats.overall}% Accuracy</span>
+              </div>
+              <div style={{ color: 'var(--text-tertiary)' }}>
+                {learningStats.totalCorrections} Corrections
+              </div>
+            </div>
+          </div>
+        )}
       </div>
+
+      {/* Pipeline Telemetry */}
+      {pipelineState && (
+        <div style={{
+          padding: '12px',
+          background: 'rgba(124, 58, 237, 0.08)',
+          borderBottom: '1px solid rgba(124, 58, 237, 0.15)',
+          fontSize: '11px',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: '6px'
+        }}>
+          <div style={{ fontWeight: 'bold', color: 'var(--primary-300)', display: 'flex', justifyContent: 'space-between' }}>
+            <span>⚡ AI RECOGNITION PIPELINE</span>
+            <span>Attempt {pipelineState.currentAttempt}/{pipelineState.maxAttempts}</span>
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px' }}>
+            <div><span style={{ color: 'var(--text-muted)' }}>Stage:</span> <span style={{ fontWeight: 'bold', color: 'var(--secondary-400)' }}>{pipelineState.stage.toUpperCase()}</span></div>
+            <div><span style={{ color: 'var(--text-muted)' }}>Audio Level:</span> <span style={{ fontWeight: 'bold' }}>{Math.round(pipelineState.audioMetrics?.dB || 0)} dB</span></div>
+          </div>
+          {pipelineState.recognizedTexts.length > 0 && (
+            <div style={{ background: 'rgba(0,0,0,0.2)', padding: '6px', borderRadius: '4px', border: '1px solid rgba(255,255,255,0.04)' }}>
+              <div style={{ color: 'var(--text-muted)', fontSize: '9px', marginBottom: 2 }}>Transcribed Lyrics:</div>
+              <div style={{ color: 'var(--warning-300)', fontWeight: 'bold' }}>
+                "{pipelineState.recognizedTexts[pipelineState.recognizedTexts.length - 1]?.text}"
+              </div>
+            </div>
+          )}
+          {pipelineState.detectionResult && (
+            <div style={{ background: 'rgba(16,185,129,0.06)', padding: '6px', borderRadius: '4px', border: '1px solid rgba(16,185,129,0.15)' }}>
+              <div style={{ fontWeight: 'bold', color: 'var(--success-400)' }}>Song Found: {pipelineState.detectionResult.songName}</div>
+              <div style={{ fontSize: '10px', color: 'var(--text-secondary)' }}>Artist: {pipelineState.detectionResult.artist} • Confidence: {pipelineState.detectionResult.confidence}%</div>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Terminal Logs */}
       <div style={{

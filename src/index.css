@@ -1940,3 +1940,796 @@ ul, ol {
     backdrop-filter: none;
   }
 }
+
+/* ============================================================
+   SONG RECOGNITION ENGINE — UI STYLES
+   Premium detection overlay, waveforms, confidence meters
+   ============================================================ */
+
+/* ── Detection Overlay ─────────────────────────────────────── */
+
+.song-detector-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  background: rgba(5, 5, 20, 0.92);
+  backdrop-filter: blur(30px);
+  -webkit-backdrop-filter: blur(30px);
+  z-index: var(--z-overlay);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-8);
+}
+
+.song-detector-overlay::before {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 600px;
+  height: 600px;
+  transform: translate(-50%, -50%);
+  background: radial-gradient(ellipse, rgba(124, 58, 237, 0.12) 0%, transparent 70%);
+  pointer-events: none;
+}
+
+/* ── Stage Progress Bar ────────────────────────────────────── */
+
+.detection-stages {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-10);
+  position: relative;
+}
+
+.detection-stage-pill {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-1) var(--space-3);
+  border-radius: var(--radius-full);
+  font-size: var(--text-xs);
+  font-weight: var(--font-medium);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text-muted);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  transition: all 0.4s var(--ease-out);
+  white-space: nowrap;
+}
+
+.detection-stage-pill--active {
+  background: rgba(124, 58, 237, 0.2);
+  color: var(--primary-300);
+  border-color: var(--primary-500);
+  box-shadow: 0 0 15px rgba(124, 58, 237, 0.3);
+  animation: pulseGlow 2s ease-in-out infinite;
+}
+
+.detection-stage-pill--complete {
+  background: rgba(16, 185, 129, 0.15);
+  color: var(--success-400);
+  border-color: rgba(16, 185, 129, 0.3);
+}
+
+.detection-stage-connector {
+  width: 20px;
+  height: 2px;
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 1px;
+  transition: background 0.4s var(--ease-out);
+}
+
+.detection-stage-connector--active {
+  background: var(--primary-500);
+  box-shadow: 0 0 6px rgba(124, 58, 237, 0.4);
+}
+
+/* ── Audio Waveform Visualization ──────────────────────────── */
+
+.audio-waveform {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  height: 80px;
+  margin: var(--space-6) 0;
+}
+
+.audio-waveform-bar {
+  width: 4px;
+  background: var(--gradient-primary);
+  border-radius: 2px;
+  min-height: 4px;
+  transition: height 0.15s ease;
+  animation: waveformPulse var(--wave-duration, 1s) ease-in-out infinite;
+  animation-delay: var(--wave-delay, 0s);
+}
+
+@keyframes waveformPulse {
+  0%, 100% { height: var(--wave-min, 8px); opacity: 0.5; }
+  50% { height: var(--wave-max, 60px); opacity: 1; }
+}
+
+/* When recording is active — more energetic */
+.audio-waveform--active .audio-waveform-bar {
+  --wave-min: 10px;
+  --wave-max: 70px;
+}
+
+/* When idle — subtle breathing */
+.audio-waveform--idle .audio-waveform-bar {
+  --wave-min: 4px;
+  --wave-max: 16px;
+  animation-duration: 2s;
+}
+
+/* Compact waveform for inline use */
+.audio-waveform--compact {
+  height: 24px;
+  gap: 2px;
+}
+
+.audio-waveform--compact .audio-waveform-bar {
+  width: 2px;
+  --wave-min: 3px;
+  --wave-max: 20px;
+}
+
+/* ── Confidence Meter (Circular Gauge) ─────────────────────── */
+
+.confidence-meter {
+  position: relative;
+  width: 140px;
+  height: 140px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: var(--space-4) auto;
+}
+
+.confidence-meter svg {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  transform: rotate(-90deg);
+}
+
+.confidence-meter-bg {
+  fill: none;
+  stroke: rgba(255, 255, 255, 0.06);
+  stroke-width: 6;
+}
+
+.confidence-meter-fill {
+  fill: none;
+  stroke-width: 6;
+  stroke-linecap: round;
+  transition: stroke-dashoffset 1s var(--ease-out), stroke 0.5s var(--ease-out);
+}
+
+.confidence-meter-value {
+  font-family: var(--font-display);
+  font-size: var(--text-3xl);
+  font-weight: var(--font-black);
+  z-index: 1;
+}
+
+.confidence-meter-label {
+  position: absolute;
+  bottom: 8px;
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-widest);
+}
+
+/* Confidence meter sizes */
+.confidence-meter--sm {
+  width: 80px;
+  height: 80px;
+}
+
+.confidence-meter--sm .confidence-meter-value {
+  font-size: var(--text-lg);
+}
+
+.confidence-meter--lg {
+  width: 200px;
+  height: 200px;
+}
+
+.confidence-meter--lg .confidence-meter-value {
+  font-size: var(--text-5xl);
+}
+
+/* ── Auto-Play Toggle ──────────────────────────────────────── */
+
+.autoplay-toggle {
+  position: relative;
+  width: 52px;
+  height: 28px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  cursor: pointer;
+  transition: all 0.3s var(--ease-out);
+}
+
+.autoplay-toggle--active {
+  background: rgba(124, 58, 237, 0.3);
+  border-color: var(--primary-500);
+  box-shadow: 0 0 12px rgba(124, 58, 237, 0.3), inset 0 0 6px rgba(124, 58, 237, 0.1);
+}
+
+.autoplay-toggle-knob {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  transition: all 0.3s var(--ease-spring);
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+}
+
+.autoplay-toggle--active .autoplay-toggle-knob {
+  left: 27px;
+  background: var(--primary-400);
+  box-shadow: 0 0 8px rgba(167, 139, 250, 0.5);
+}
+
+/* ── Detection Result Card ─────────────────────────────────── */
+
+.detection-result-card {
+  background: rgba(255, 255, 255, 0.04);
+  backdrop-filter: blur(20px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: var(--radius-xl);
+  padding: var(--space-6);
+  max-width: 480px;
+  width: 100%;
+  text-align: center;
+  position: relative;
+  overflow: hidden;
+}
+
+.detection-result-card::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  background: var(--gradient-primary);
+  border-radius: 3px 3px 0 0;
+}
+
+.detection-result-title {
+  font-family: var(--font-display);
+  font-size: var(--text-2xl);
+  font-weight: var(--font-bold);
+  color: var(--text-primary);
+  margin-bottom: var(--space-1);
+}
+
+.detection-result-artist {
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+  margin-bottom: var(--space-4);
+}
+
+/* ── Alternative Matches List ──────────────────────────────── */
+
+.alternative-matches {
+  margin-top: var(--space-4);
+  max-width: 480px;
+  width: 100%;
+}
+
+.alternative-matches-title {
+  font-size: var(--text-xs);
+  font-weight: var(--font-semibold);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-widest);
+  color: var(--text-muted);
+  margin-bottom: var(--space-3);
+}
+
+.alternative-match-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-2) var(--space-3);
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  border-radius: var(--radius-md);
+  margin-bottom: var(--space-2);
+  cursor: pointer;
+  transition: all 0.2s var(--ease-out);
+}
+
+.alternative-match-item:hover {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(255, 255, 255, 0.1);
+}
+
+.alternative-match-name {
+  font-size: var(--text-sm);
+  font-weight: var(--font-medium);
+  color: var(--text-primary);
+}
+
+.alternative-match-artist {
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+}
+
+.alternative-match-confidence {
+  font-size: var(--text-xs);
+  font-weight: var(--font-bold);
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+/* ── Song Control Panel ────────────────────────────────────── */
+
+.song-control-panel {
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: var(--radius-xl);
+  padding: var(--space-4);
+}
+
+.song-control-panel-title {
+  font-size: var(--text-xs);
+  font-weight: var(--font-semibold);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-widest);
+  color: var(--text-muted);
+  margin-bottom: var(--space-3);
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.song-control-buttons {
+  display: flex;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  margin-bottom: var(--space-3);
+}
+
+.song-control-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border-radius: var(--radius-md);
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all 0.2s var(--ease-out);
+}
+
+.song-control-btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.1);
+  border-color: rgba(255, 255, 255, 0.15);
+  color: var(--text-primary);
+  transform: scale(1.05);
+}
+
+.song-control-btn:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
+.song-control-btn--primary {
+  background: rgba(124, 58, 237, 0.2);
+  border-color: rgba(124, 58, 237, 0.3);
+  color: var(--primary-400);
+}
+
+.song-control-btn--primary:hover:not(:disabled) {
+  background: rgba(124, 58, 237, 0.3);
+  box-shadow: 0 0 10px rgba(124, 58, 237, 0.3);
+}
+
+.song-control-btn--success {
+  background: rgba(16, 185, 129, 0.15);
+  border-color: rgba(16, 185, 129, 0.2);
+  color: var(--success-400);
+}
+
+.song-control-btn--danger {
+  background: rgba(239, 68, 68, 0.15);
+  border-color: rgba(239, 68, 68, 0.2);
+  color: var(--error-400);
+}
+
+/* ── Volume Slider ─────────────────────────────────────────── */
+
+.volume-slider {
+  -webkit-appearance: none;
+  width: 100%;
+  height: 4px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.1);
+  outline: none;
+  transition: background 0.2s;
+}
+
+.volume-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--primary-400);
+  cursor: pointer;
+  box-shadow: 0 0 6px rgba(167, 139, 250, 0.5);
+  transition: transform 0.2s;
+}
+
+.volume-slider::-webkit-slider-thumb:hover {
+  transform: scale(1.2);
+}
+
+.volume-slider::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--primary-400);
+  cursor: pointer;
+  border: none;
+}
+
+/* ── Playback Duration Pills ───────────────────────────────── */
+
+.duration-pills {
+  display: flex;
+  gap: var(--space-1);
+  flex-wrap: wrap;
+}
+
+.duration-pill {
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-sm);
+  font-size: 10px;
+  font-weight: var(--font-semibold);
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  color: var(--text-tertiary);
+  cursor: pointer;
+  transition: all 0.2s var(--ease-out);
+}
+
+.duration-pill:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-secondary);
+}
+
+.duration-pill--active {
+  background: rgba(124, 58, 237, 0.2);
+  border-color: var(--primary-500);
+  color: var(--primary-300);
+}
+
+/* ── Mic Pulse Animation ───────────────────────────────────── */
+
+.mic-pulse {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.mic-pulse::before,
+.mic-pulse::after {
+  content: '';
+  position: absolute;
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  border: 2px solid var(--primary-500);
+  animation: micPulseRipple 2s ease-out infinite;
+}
+
+.mic-pulse::after {
+  animation-delay: 0.5s;
+}
+
+@keyframes micPulseRipple {
+  0% { transform: scale(1); opacity: 0.6; }
+  100% { transform: scale(2.5); opacity: 0; }
+}
+
+/* ── Detection Progress Ripple ─────────────────────────────── */
+
+.detection-ripple {
+  position: absolute;
+  width: 200px;
+  height: 200px;
+  border-radius: 50%;
+  border: 1px solid rgba(124, 58, 237, 0.2);
+  animation: detectionRipple 3s ease-out infinite;
+}
+
+@keyframes detectionRipple {
+  0% { transform: scale(0.5); opacity: 0.5; }
+  100% { transform: scale(3); opacity: 0; }
+}
+
+/* ── Attempt Dots ──────────────────────────────────────────── */
+
+.attempt-dots {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+  margin-top: var(--space-6);
+}
+
+.attempt-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  transition: all 0.3s var(--ease-out);
+}
+
+.attempt-dot--active {
+  background: var(--primary-500);
+  border-color: var(--primary-400);
+  box-shadow: 0 0 8px rgba(124, 58, 237, 0.5);
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+.attempt-dot--done {
+  background: var(--success-500);
+  border-color: var(--success-400);
+}
+
+.attempt-dot--failed {
+  background: var(--error-500);
+  border-color: var(--error-400);
+}
+
+/* ── Language Badge ────────────────────────────────────────── */
+
+.language-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-sm);
+  font-size: 10px;
+  font-weight: var(--font-bold);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-wider);
+}
+
+.language-badge--kannada { background: rgba(245, 158, 11, 0.15); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.2); }
+.language-badge--malayalam { background: rgba(16, 185, 129, 0.15); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.2); }
+.language-badge--tamil { background: rgba(244, 63, 94, 0.15); color: #fb7185; border: 1px solid rgba(244, 63, 94, 0.2); }
+.language-badge--telugu { background: rgba(59, 130, 246, 0.15); color: #60a5fa; border: 1px solid rgba(59, 130, 246, 0.2); }
+.language-badge--hindi { background: rgba(124, 58, 237, 0.15); color: #a78bfa; border: 1px solid rgba(124, 58, 237, 0.2); }
+.language-badge--english { background: rgba(6, 182, 212, 0.15); color: #22d3ee; border: 1px solid rgba(6, 182, 212, 0.2); }
+.language-badge--punjabi { background: rgba(249, 115, 22, 0.15); color: #fb923c; border: 1px solid rgba(249, 115, 22, 0.2); }
+.language-badge--bengali { background: rgba(168, 85, 247, 0.15); color: #c084fc; border: 1px solid rgba(168, 85, 247, 0.2); }
+.language-badge--all { background: linear-gradient(135deg, rgba(124, 58, 237, 0.15), rgba(6, 182, 212, 0.15)); color: var(--text-primary); border: 1px solid rgba(124, 58, 237, 0.2); }
+
+/* ── Recognized Text Stream ────────────────────────────────── */
+
+.recognized-text {
+  font-family: var(--font-mono);
+  font-size: var(--text-lg);
+  color: var(--primary-300);
+  text-align: center;
+  min-height: 28px;
+  max-width: 500px;
+  word-wrap: break-word;
+}
+
+.recognized-text-cursor {
+  display: inline-block;
+  width: 2px;
+  height: 1.2em;
+  background: var(--primary-400);
+  margin-left: 2px;
+  animation: blink 1s step-end infinite;
+}
+
+@keyframes blink {
+  0%, 50% { opacity: 1; }
+  51%, 100% { opacity: 0; }
+}
+
+/* ── Debug Panel Enhancements ──────────────────────────────── */
+
+.debug-metric-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-1) 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+}
+
+.debug-metric-label {
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+}
+
+.debug-metric-value {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  font-weight: var(--font-semibold);
+}
+
+.debug-level-bar {
+  width: 60px;
+  height: 6px;
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.debug-level-bar-fill {
+  height: 100%;
+  border-radius: 3px;
+  transition: width 0.15s ease, background-color 0.3s ease;
+}
+
+.debug-section {
+  padding: var(--space-3);
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid rgba(255, 255, 255, 0.04);
+  border-radius: var(--radius-md);
+  margin-bottom: var(--space-2);
+}
+
+.debug-section-title {
+  font-size: 10px;
+  font-weight: var(--font-bold);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-widest);
+  color: var(--text-muted);
+  margin-bottom: var(--space-2);
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+/* ── Candidate Songs List (Debug) ──────────────────────────── */
+
+.candidate-song-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1) 0;
+  font-size: var(--text-xs);
+}
+
+.candidate-song-rank {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.06);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 9px;
+  font-weight: var(--font-bold);
+  color: var(--text-muted);
+}
+
+.candidate-song-score-bar {
+  width: 40px;
+  height: 3px;
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.candidate-song-score-fill {
+  height: 100%;
+  border-radius: 2px;
+  background: var(--gradient-primary);
+}
+
+/* ── Inline Waveform (for recording indicator) ────────────── */
+
+.inline-waveform {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  height: 16px;
+  vertical-align: middle;
+}
+
+.inline-waveform-bar {
+  width: 2px;
+  background: currentColor;
+  border-radius: 1px;
+  animation: inlineWave 0.8s ease-in-out infinite;
+}
+
+@keyframes inlineWave {
+  0%, 100% { height: 4px; }
+  50% { height: 14px; }
+}
+
+/* ── Detection Status Indicator ────────────────────────────── */
+
+.detection-status {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-full);
+  font-size: var(--text-xs);
+  font-weight: var(--font-semibold);
+}
+
+.detection-status--listening {
+  background: rgba(124, 58, 237, 0.1);
+  color: var(--primary-400);
+  border: 1px solid rgba(124, 58, 237, 0.2);
+}
+
+.detection-status--detecting {
+  background: rgba(6, 182, 212, 0.1);
+  color: var(--secondary-400);
+  border: 1px solid rgba(6, 182, 212, 0.2);
+}
+
+.detection-status--complete {
+  background: rgba(16, 185, 129, 0.1);
+  color: var(--success-400);
+  border: 1px solid rgba(16, 185, 129, 0.2);
+}
+
+.detection-status--failed {
+  background: rgba(239, 68, 68, 0.1);
+  color: var(--error-400);
+  border: 1px solid rgba(239, 68, 68, 0.2);
+}
+
+.detection-status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+/* ── Responsive for detection overlay ──────────────────────── */
+
+@media (max-width: 768px) {
+  .detection-stages {
+    flex-wrap: wrap;
+    justify-content: center;
+  }
+
+  .detection-stage-connector {
+    display: none;
+  }
+
+  .song-detector-overlay {
+    padding: var(--space-4);
+  }
+
+  .confidence-meter--lg {
+    width: 140px;
+    height: 140px;
+  }
+}

@@ -26,6 +26,12 @@ const DEFAULT_SETTINGS = {
   penaltyPoints: -5,
   autoValidate: true,
   allowSkip: true,
+  // Recognition & Playback
+  recognitionMode: 'auto',      // 'auto' | 'manual'
+  autoPlayEnabled: true,
+  allLanguagesMode: true,
+  playbackDuration: 15,         // seconds (0 = full song)
+  recognitionLanguages: ['all'],
 };
 
 /* ── Initial State ───────────────────────────────────────────── */
@@ -57,6 +63,14 @@ const createInitialState = () => ({
   // Fair play
   usedSongs: [],       // persisted as array (Sets don't serialize)
   violations: [],
+
+  // Recognition Engine State
+  detectionState: 'idle',       // idle | listening | detecting | searching | validating | playing
+  currentDetection: null,       // { songName, confidence, alternatives, language, ... }
+  recognitionActive: false,     // Whether recognition engine is running
+
+  // Learning / Corrections
+  corrections: [],              // [{ wrongText, correctTitle, timestamp }]
 });
 
 /* ── Store ───────────────────────────────────────────────────── */
@@ -432,6 +446,101 @@ export const useGameStore = create(
       getLeaderboard: () => {
         const { teams } = get();
         return [...teams].sort((a, b) => b.score - a.score);
+      },
+
+      /* ─────────────────────────────────────────────────────────
+       * RECOGNITION & AUTOPLAY CONTROLS
+       * ───────────────────────────────────────────────────────── */
+
+      /**
+       * Set recognition mode ('auto' or 'manual').
+       * @param {'auto'|'manual'} mode
+       */
+      setRecognitionMode: (mode) => {
+        set((state) => ({
+          settings: { ...state.settings, recognitionMode: mode },
+        }));
+      },
+
+      /**
+       * Toggle auto-play on/off.
+       */
+      toggleAutoPlay: () => {
+        set((state) => ({
+          settings: { ...state.settings, autoPlayEnabled: !state.settings.autoPlayEnabled },
+        }));
+      },
+
+      /**
+       * Toggle all-languages mode on/off.
+       */
+      toggleAllLanguages: () => {
+        set((state) => ({
+          settings: { ...state.settings, allLanguagesMode: !state.settings.allLanguagesMode },
+        }));
+      },
+
+      /**
+       * Set playback duration in seconds (0 = full song).
+       * @param {number} seconds
+       */
+      setPlaybackDuration: (seconds) => {
+        set((state) => ({
+          settings: { ...state.settings, playbackDuration: seconds },
+        }));
+      },
+
+      /**
+       * Set the current detection state.
+       * @param {string} detectionState
+       */
+      setDetectionState: (detectionState) => {
+        set({ detectionState });
+      },
+
+      /**
+       * Submit a detection result from the recognition engine.
+       * @param {Object} detection — { songName, confidence, alternatives, language, ... }
+       */
+      submitDetection: (detection) => {
+        set({
+          currentDetection: detection,
+          detectionState: 'complete',
+        });
+      },
+
+      /**
+       * Clear the current detection.
+       */
+      clearDetection: () => {
+        set({
+          currentDetection: null,
+          detectionState: 'idle',
+        });
+      },
+
+      /**
+       * Set recognition active state.
+       * @param {boolean} active
+       */
+      setRecognitionActive: (active) => {
+        set({ recognitionActive: active });
+      },
+
+      /**
+       * Store a host correction (wrong detection → correct song).
+       * @param {string} wrongText
+       * @param {Object} correctSong
+       */
+      addCorrection: (wrongText, correctSong) => {
+        set((state) => ({
+          corrections: [...state.corrections, {
+            wrongText,
+            correctTitle: correctSong.title || correctSong.songTitle,
+            correctArtist: correctSong.artist || '',
+            timestamp: Date.now(),
+          }],
+        }));
       },
 
       /* ─────────────────────────────────────────────────────────

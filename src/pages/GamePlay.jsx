@@ -11,6 +11,10 @@ import { getNextLetter } from '../engine/LetterEngine';
 import { searchSongs } from '../data/songDatabase';
 import { useToast } from '../components/ui/Toast';
 import { syncEngine } from '../engine/SyncEngine';
+import { songRecognitionEngine } from '../engine/SongRecognitionEngine.js';
+import { ConfidenceEngine } from '../engine/ConfidenceEngine.js';
+import { autoPlayEngine } from '../engine/AutoPlayEngine.js';
+import SongDetector from '../components/control/SongDetector.jsx';
 
 export default function GamePlay() {
   const navigate = useNavigate();
@@ -29,20 +33,26 @@ export default function GamePlay() {
   const [suggestions, setSuggestions] = useState([]);
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [scoreBump, setScoreBump] = useState(null);
+  const lastAutoStartedTurnRef = useRef({ teamIndex: -1, letter: null });
 
-  // Microphone state
-  const [isRecording, setIsRecording] = useState(false);
-  const [recordingTime, setRecordingTime] = useState(0);
-  const [isTranscribing, setIsTranscribing] = useState(false);
-  const mediaRecorderRef = useRef(null);
-  const audioChunksRef = useRef([]);
-  const recordingIntervalRef = useRef(null);
+  // Premium Speech Detector State
+  const [detectorState, setDetectorState] = useState({
+    stage: 'idle',
+    stageInfo: null,
+    recognizedText: '',
+    confidence: 0,
+    confidenceLabel: null,
+    detectionResult: null,
+    audioLevel: 0,
+    currentAttempt: 1,
+    maxAttempts: 5,
+    elapsed: 0,
+  });
 
   // YouTube states
   const [currentVideoId, setCurrentVideoId] = useState('');
   const [isPlaying, setIsPlaying] = useState(false);
   const [showPlayButton, setShowPlayButton] = useState(false);
-  const ytPlayerRef = useRef(null);
 
   const currentTeam = teams[currentTeamIndex];
   const timerPercent = timer.total > 0 ? timer.remaining / timer.total : 0;
@@ -92,8 +102,36 @@ export default function GamePlay() {
     }
   }, [songTitle]);
 
-  // Load YouTube Iframe API Script
+  // Load YouTube Iframe API Script & Init Player
   useEffect(() => {
+    const initPlayer = async () => {
+      dispatchDebugLog('Initializing YouTube Player via AutoPlayEngine...');
+      try {
+        await autoPlayEngine.initialize('yt-player-element', {
+          onStateChange: (stateName, info) => {
+            dispatchStatus('yt', stateName);
+            if (stateName === 'playing') {
+              setIsPlaying(true);
+              setShowPlayButton(false);
+              dispatchDebugLog('Song audio clip is playing.');
+            } else {
+              setIsPlaying(false);
+            }
+          },
+          onPlaybackEnd: () => {
+            dispatchDebugLog('Playback finished.');
+          },
+          onError: (err) => {
+            dispatchDebugLog(`AutoPlayEngine error: ${err.message}`);
+            dispatchStatus('yt', 'error');
+          }
+        });
+        dispatchStatus('yt', 'ready');
+      } catch (e) {
+        console.error('Failed to initialize AutoPlayEngine:', e);
+      }
+    };
+
     if (!window.YT) {
       dispatchDebugLog('Loading YouTube Iframe API Script...');
       const tag = document.createElement('script');
@@ -110,204 +148,170 @@ export default function GamePlay() {
     }
 
     return () => {
-      if (ytPlayerRef.current) {
-        try {
-          ytPlayerRef.current.destroy();
-        } catch (e) {}
-      }
+      autoPlayEngine.destroy();
     };
   }, []);
 
-  const initPlayer = () => {
-    if (window.YT && window.YT.Player) {
-      dispatchDebugLog('Initializing YouTube Player element...');
-      ytPlayerRef.current = new window.YT.Player('yt-player-element', {
-        height: '140',
-        width: '240',
-        playerVars: {
-          autoplay: 0,
-          controls: 1,
-          rel: 0
-        },
-        events: {
-          onReady: () => {
-            dispatchDebugLog('YouTube Player Ready.');
-            dispatchStatus('yt', 'ready');
-          },
-          onStateChange: handlePlayerStateChange,
-          onError: (e) => {
-            dispatchDebugLog(`YouTube Player error occurred: Code ${e.data}`);
-            dispatchStatus('yt', 'error');
-          }
-        }
-      });
-    }
-  };
-
-  const handlePlayerStateChange = (event) => {
-    // YT.PlayerState: -1 (unstarted), 0 (ended), 1 (playing), 2 (paused), 3 (buffering), 5 (cued)
-    const stateNames = {
-      '-1': 'unstarted',
-      '0': 'ended',
-      '1': 'playing',
-      '2': 'paused',
-      '3': 'buffering',
-      '5': 'cued'
-    };
-    const stateName = stateNames[event.data] || 'unknown';
-    dispatchStatus('yt', stateName);
-
-    if (event.data === window.YT.PlayerState.PLAYING) {
-      setIsPlaying(true);
-      setShowPlayButton(false);
-      dispatchDebugLog('Song audio clip is playing.');
-    } else {
-      setIsPlaying(false);
-    }
-  };
-
   const handleManualPlay = () => {
-    if (ytPlayerRef.current && ytPlayerRef.current.playVideo) {
-      ytPlayerRef.current.playVideo();
-    }
+    autoPlayEngine.resume();
   };
 
-  // Audio recording handlers
-  const startRecording = async () => {
-    if (isRecording) return;
-    dispatchDebugLog('Requesting microphone access permission...');
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      dispatchDebugLog('Microphone permission granted. Initializing MediaRecorder...');
-      dispatchStatus('whisper', 'recording');
+  // Auto-activate listening at the start of a turn
+  useEffect(() => {
+    if (status !== 'playing' || !!validation || !!currentVideoId) return;
 
-      audioChunksRef.current = [];
-      const options = { mimeType: 'audio/webm' };
-      
-      // Select best browser-supported mimetype
-      if (!MediaRecorder.isTypeSupported('audio/webm')) {
-        options.mimeType = 'audio/ogg';
-      }
+    const alreadyStarted = lastAutoStartedTurnRef.current.teamIndex === currentTeamIndex && 
+                           lastAutoStartedTurnRef.current.letter === currentLetter;
 
-      const mediaRecorder = new MediaRecorder(stream, options);
-      mediaRecorderRef.current = mediaRecorder;
-
-      mediaRecorder.ondataavailable = (e) => {
-        if (e.data && e.data.size > 0) {
-          audioChunksRef.current.push(e.data);
-        }
-      };
-
-      mediaRecorder.onstop = async () => {
-        dispatchDebugLog('Audio recording stopped. Constructing raw data audio blob...');
-        const audioBlob = new Blob(audioChunksRef.current, { type: mediaRecorder.mimeType });
-        await handleUploadAudio(audioBlob);
-      };
-
-      mediaRecorder.start();
-      setIsRecording(true);
-      setRecordingTime(0);
-      
-      recordingIntervalRef.current = setInterval(() => {
-        setRecordingTime(prev => prev + 1);
-      }, 1000);
-
-      dispatchDebugLog('Microphone voice recording active.');
-    } catch (err) {
-      console.error('Failed to start microphone recording:', err);
-      dispatchDebugLog(`Microphone initialization failed: ${err.message}`);
-      addToast({
-        type: 'error',
-        title: 'Microphone Error',
-        message: 'Could not access microphone. Please verify browser permissions.'
-      });
-      dispatchStatus('whisper', 'error');
+    if (!alreadyStarted) {
+      lastAutoStartedTurnRef.current = { teamIndex: currentTeamIndex, letter: currentLetter };
+      dispatchDebugLog('Auto-starting recognition for new turn...');
+      startEngineRecognition();
     }
-  };
+  }, [currentTeamIndex, currentLetter, status, validation, currentVideoId]);
 
-  const stopRecording = () => {
-    if (!isRecording) return;
+  const updateDetectorStateFromEngine = useCallback(() => {
+    const engineState = songRecognitionEngine.getState();
+    const confLabel = engineState.detectionResult 
+      ? ConfidenceEngine.getConfidenceLabel(engineState.detectionResult.confidence)
+      : null;
     
-    // Stop recording interval
-    if (recordingIntervalRef.current) {
-      clearInterval(recordingIntervalRef.current);
-    }
+    setDetectorState(prev => ({
+      ...prev,
+      stage: engineState.stage,
+      stageInfo: engineState.stageInfo,
+      currentAttempt: engineState.currentAttempt + 1,
+      maxAttempts: engineState.maxAttempts,
+      recognizedText: engineState.recognizedTexts[engineState.recognizedTexts.length - 1]?.text || '',
+      confidence: engineState.detectionResult?.confidence || 0,
+      confidenceLabel: confLabel,
+      detectionResult: engineState.detectionResult,
+    }));
+  }, [dispatchDebugLog]);
 
-    // Stop MediaRecorder
-    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
-      mediaRecorderRef.current.stop();
-    }
+  const startEngineRecognition = async () => {
+    dispatchDebugLog('Starting multi-engine song recognition...');
+    
+    setDetectorState(prev => ({
+      ...prev,
+      elapsed: 0,
+      stage: 'listening'
+    }));
 
-    // Stop all audio tracks to release the microphone device
-    if (mediaRecorderRef.current && mediaRecorderRef.current.stream) {
-      mediaRecorderRef.current.stream.getTracks().forEach(track => track.stop());
-    }
-
-    setIsRecording(false);
-  };
-
-  const handleUploadAudio = async (blob) => {
-    setIsTranscribing(true);
-    dispatchStatus('whisper', 'transcribing');
-    dispatchDebugLog('Uploading audio blob to /api/transcribe...');
-
-    const formData = new FormData();
-    formData.append('audio', blob);
+    const timer = setInterval(() => {
+      setDetectorState(prev => {
+        if (prev.stage === 'idle' || prev.stage === 'complete' || prev.stage === 'failed') {
+          clearInterval(timer);
+          return prev;
+        }
+        return { ...prev, elapsed: prev.elapsed + 1 };
+      });
+    }, 1000);
 
     try {
-      const response = await fetch(`http://localhost:3001/api/transcribe?letter=${currentLetter || ''}`, {
-        method: 'POST',
-        body: formData
-      });
+      await songRecognitionEngine.startRecognition({
+        requiredLetter: currentLetter,
+        language: settings.allLanguagesMode ? 'all' : (settings.recognitionLanguages?.[0] || 'all'),
+        autoMode: settings.recognitionMode === 'auto',
+        onStageChange: (stage, stageInfo) => {
+          updateDetectorStateFromEngine();
+        },
+        onTextDetected: (text, confidence, engine) => {
+          updateDetectorStateFromEngine();
+        },
+        onLevelChange: (level, dB) => {
+          setDetectorState(prev => ({ ...prev, audioLevel: level }));
+        },
+        onResultReady: async (result) => {
+          updateDetectorStateFromEngine();
+          
+          if (result && result.songName) {
+            // Auto mode & high confidence -> auto approve & play!
+            if (result.confidence >= 50 && settings.recognitionMode === 'auto') {
+              setSongTitle(result.songName);
+              setArtist(result.artist || '');
+              setMovie(result.movie || '');
+              setLanguage(result.language || 'hindi');
 
-      if (!response.ok) {
-        throw new Error(`Server returned status ${response.status}`);
-      }
+              const songId = submitSong({
+                songTitle: result.songName,
+                artist: result.artist || '',
+                movie: result.movie || '',
+                language: result.language || 'hindi'
+              });
 
-      const data = await response.json();
-      const transcribedText = data.text || '';
-      dispatchDebugLog(`Received text transcription: "${transcribedText}"`);
+              if (songId) {
+                approveSong(songId);
+                setScoreBump(currentTeam?.id);
+                setTimeout(() => setScoreBump(null), 600);
+              }
 
-      // Fill in input and trigger search matching
-      if (transcribedText.trim()) {
-        setSongTitle(transcribedText);
-        addToast({
-          type: 'success',
-          title: 'Transcription Ready',
-          message: `Sung phrase: "${transcribedText}"`
-        });
-        
-        // Attempt immediate database matching and populate
-        const matches = searchSongs(transcribedText, 1);
-        if (matches && matches.length > 0) {
-          const match = matches[0];
-          dispatchDebugLog(`Fuzzy match found in song catalog: "${match.title}" by ${match.artist}`);
-          setSongTitle(match.title);
-          setArtist(match.artist);
-          setMovie(match.movie);
-          setLanguage(match.language);
+              setValidation({
+                status: 'approved',
+                reason: `Auto approved (${result.confidence}% confidence)`,
+                confidence: result.confidence
+              });
+
+              // Playback lookup
+              const ytResult = await songRecognitionEngine._validateWithYouTube(result.songName, result.artist);
+              if (ytResult.videoId) {
+                setCurrentVideoId(ytResult.videoId);
+                autoPlayEngine.setPlaybackDuration(0); // infinite
+                if (settings.autoPlayEnabled) {
+                  autoPlayEngine.playSong(ytResult.videoId, result.songName);
+                } else {
+                  autoPlayEngine.currentVideoId = ytResult.videoId;
+                  autoPlayEngine.currentSongTitle = result.songName;
+                  if (autoPlayEngine.player && autoPlayEngine.player.cueVideoById) {
+                    autoPlayEngine.player.cueVideoById({
+                      videoId: ytResult.videoId,
+                      startSeconds: 30
+                    });
+                    autoPlayEngine._setState('stopped');
+                  }
+                }
+              }
+
+              addToast({
+                type: 'success',
+                title: 'Song Confirmed!',
+                message: `"${result.songName}" matched with ${result.confidence}% confidence.`
+              });
+
+              setTimeout(() => {
+                setDetectorState(prev => ({ ...prev, stage: 'idle' }));
+              }, 1500);
+            } else {
+              // Keep overlay open at complete stage to allow host review/override
+              setDetectorState(prev => ({
+                ...prev,
+                stage: 'complete',
+                detectionResult: result,
+                confidence: result.confidence,
+              }));
+              addToast({
+                type: 'info',
+                title: 'Review Required',
+                message: `Confidence is ${result.confidence}%. Host review required.`
+              });
+            }
+          }
+        },
+        onError: (err) => {
+          dispatchDebugLog(`Recognition engine error: ${err.message}`);
+          updateDetectorStateFromEngine();
         }
-      } else {
-        addToast({
-          type: 'warning',
-          title: 'Transcription Empty',
-          message: 'Could not detect any clear lyrics. Please try again.'
-        });
-      }
-
-      dispatchStatus('whisper', 'idle');
-    } catch (err) {
-      console.error('Failed to transcribe audio:', err);
-      dispatchDebugLog(`Whisper transcription endpoint failed: ${err.message}`);
-      addToast({
-        type: 'error',
-        title: 'Transcription Failed',
-        message: 'Could not connect to Whisper transcription services.'
       });
-      dispatchStatus('whisper', 'error');
-    } finally {
-      setIsTranscribing(false);
+    } catch (err) {
+      console.error(err);
+      dispatchDebugLog(`Failed to start recognition: ${err.message}`);
     }
+  };
+
+  const stopEngineRecognition = () => {
+    songRecognitionEngine.stopRecognition();
+    setDetectorState(prev => ({ ...prev, stage: 'idle' }));
+    dispatchDebugLog('Song recognition manually stopped.');
   };
 
   const handleTimeout = useCallback(() => {
@@ -340,36 +344,9 @@ export default function GamePlay() {
         // Fetch YouTube matching video clip
         triggerYouTubePlay(songTitle, artist);
       }
-
-      // Allow song to play for 10 seconds before proceeding to next turn (for collegiate review/entertainment)
-      setTimeout(() => {
-        // Stop YouTube playback
-        if (ytPlayerRef.current && ytPlayerRef.current.stopVideo) {
-          try {
-            ytPlayerRef.current.stopVideo();
-          } catch (e) {}
-        }
-        
-        nextTurn();
-        setValidation(null);
-        setSongTitle('');
-        setArtist('');
-        setMovie('');
-        setCurrentVideoId('');
-      }, 10000);
-
     } else {
       const songId = submitSong({ songTitle, artist, movie, language });
       if (songId) rejectSong(songId);
-      
-      setTimeout(() => {
-        nextTurn();
-        setValidation(null);
-        setSongTitle('');
-        setArtist('');
-        setMovie('');
-        setCurrentVideoId('');
-      }, 3000);
     }
   };
 
@@ -395,28 +372,173 @@ export default function GamePlay() {
         setCurrentVideoId(videoId);
         dispatchDebugLog(`Loading YouTube video ID: ${videoId}`);
         
-        if (ytPlayerRef.current && ytPlayerRef.current.loadVideoById) {
-          ytPlayerRef.current.loadVideoById({
-            videoId: videoId,
-            startSeconds: 30
-          });
-          
-          // Autoplay checks
-          setTimeout(() => {
-            if (ytPlayerRef.current && ytPlayerRef.current.getPlayerState) {
-              const state = ytPlayerRef.current.getPlayerState();
-              if (state !== window.YT.PlayerState.PLAYING) {
-                dispatchDebugLog('Autoplay blocked by browser. Revealing fallback play button.');
-                setShowPlayButton(true);
-              }
-            }
-          }, 1500);
+        autoPlayEngine.setPlaybackDuration(0); // infinite
+        if (settings.autoPlayEnabled) {
+          autoPlayEngine.playSong(videoId, title);
+        } else {
+          autoPlayEngine.currentVideoId = videoId;
+          autoPlayEngine.currentSongTitle = title;
+          if (autoPlayEngine.player && autoPlayEngine.player.cueVideoById) {
+            autoPlayEngine.player.cueVideoById({
+              videoId,
+              startSeconds: 30
+            });
+            autoPlayEngine._setState('stopped');
+          }
         }
       }
     } catch (err) {
       console.error('YouTube search lookup failed:', err);
       dispatchDebugLog(`YouTube Search API check failed: ${err.message}`);
     }
+  };
+
+  const handleApproveOverride = async () => {
+    dispatchDebugLog('Host approved song override.');
+    const result = detectorState.detectionResult;
+    if (result && result.songName) {
+      setSongTitle(result.songName);
+      setArtist(result.artist || '');
+      setMovie(result.movie || '');
+      setLanguage(result.language || 'hindi');
+
+      const songId = submitSong({
+        songTitle: result.songName,
+        artist: result.artist || '',
+        movie: result.movie || '',
+        language: result.language || 'hindi'
+      });
+
+      if (songId) {
+        approveSong(songId);
+        setScoreBump(currentTeam?.id);
+        setTimeout(() => setScoreBump(null), 600);
+      }
+
+      setValidation({
+        status: 'approved',
+        reason: 'Host approved override',
+        confidence: result.confidence || 100
+      });
+
+      const ytResult = await songRecognitionEngine._validateWithYouTube(result.songName, result.artist);
+      if (ytResult.videoId) {
+        setCurrentVideoId(ytResult.videoId);
+        autoPlayEngine.setPlaybackDuration(0);
+        if (settings.autoPlayEnabled) {
+          autoPlayEngine.playSong(ytResult.videoId, result.songName);
+        } else {
+          autoPlayEngine.currentVideoId = ytResult.videoId;
+          autoPlayEngine.currentSongTitle = result.songName;
+          if (autoPlayEngine.player && autoPlayEngine.player.cueVideoById) {
+            autoPlayEngine.player.cueVideoById({ videoId: ytResult.videoId, startSeconds: 30 });
+            autoPlayEngine._setState('stopped');
+          }
+        }
+      }
+
+      addToast({
+        type: 'success',
+        title: 'Song Confirmed!',
+        message: `"${result.songName}" approved by Host override.`
+      });
+    }
+    setDetectorState(prev => ({ ...prev, stage: 'idle' }));
+  };
+
+  const handleRejectOverride = () => {
+    dispatchDebugLog('Host rejected song match.');
+    const result = detectorState.detectionResult;
+    if (result && result.songName) {
+      const songId = submitSong({
+        songTitle: result.songName,
+        artist: result.artist || '',
+        movie: result.movie || '',
+        language: result.language || 'hindi'
+      });
+      if (songId) {
+        rejectSong(songId);
+      }
+      setValidation({
+        status: 'rejected',
+        reason: 'Host rejected override',
+        confidence: result.confidence || 0
+      });
+
+      addToast({
+        type: 'error',
+        title: 'Song Rejected',
+        message: `"${result.songName}" rejected by Host.`
+      });
+    }
+    setDetectorState(prev => ({ ...prev, stage: 'idle' }));
+  };
+
+  const handleSelectAlternative = async (alt) => {
+    dispatchDebugLog(`Host selected alternative song: "${alt.songName || alt.title}"`);
+    const selectedSongName = alt.songName || alt.title;
+    const selectedArtist = alt.artist || '';
+    const selectedMovie = alt.movie || '';
+    const selectedLanguage = alt.language || 'hindi';
+
+    setSongTitle(selectedSongName);
+    setArtist(selectedArtist);
+    setMovie(selectedMovie);
+    setLanguage(selectedLanguage);
+
+    const songId = submitSong({
+      songTitle: selectedSongName,
+      artist: selectedArtist,
+      movie: selectedMovie,
+      language: selectedLanguage
+    });
+
+    if (songId) {
+      approveSong(songId);
+      setScoreBump(currentTeam?.id);
+      setTimeout(() => setScoreBump(null), 600);
+    }
+
+    setValidation({
+      status: 'approved',
+      reason: 'Host selected alternative candidate',
+      confidence: alt.confidence || 100
+    });
+
+    const ytResult = await songRecognitionEngine._validateWithYouTube(selectedSongName, selectedArtist);
+    if (ytResult.videoId) {
+      setCurrentVideoId(ytResult.videoId);
+      autoPlayEngine.setPlaybackDuration(0);
+      if (settings.autoPlayEnabled) {
+        autoPlayEngine.playSong(ytResult.videoId, selectedSongName);
+      } else {
+        autoPlayEngine.currentVideoId = ytResult.videoId;
+        autoPlayEngine.currentSongTitle = selectedSongName;
+        if (autoPlayEngine.player && autoPlayEngine.player.cueVideoById) {
+          autoPlayEngine.player.cueVideoById({ videoId: ytResult.videoId, startSeconds: 30 });
+          autoPlayEngine._setState('stopped');
+        }
+      }
+    }
+
+    addToast({
+      type: 'success',
+      title: 'Song Confirmed!',
+      message: `"${selectedSongName}" approved from alternative candidates.`
+    });
+
+    setDetectorState(prev => ({ ...prev, stage: 'idle' }));
+  };
+
+  const handleNextTurn = () => {
+    dispatchDebugLog('Manually advancing to next turn.');
+    autoPlayEngine.stop();
+    nextTurn();
+    setValidation(null);
+    setSongTitle('');
+    setArtist('');
+    setMovie('');
+    setCurrentVideoId('');
   };
 
   const handleSkip = () => {
@@ -477,11 +599,27 @@ export default function GamePlay() {
 
         {/* Center: Main Game Area */}
         <main style={{ padding: 'var(--space-6)', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', position: 'relative' }}>
-          {/* Round info */}
-          <div className="flex items-center gap-3" style={{ marginBottom: 'var(--space-6)' }}>
+          {/* Round info & Mini Settings */}
+          <div className="flex items-center gap-3 flex-wrap justify-center" style={{ marginBottom: 'var(--space-6)' }}>
             <span className="badge badge-primary">Round {currentRound} of {totalRounds}</span>
-            <span className="badge badge-secondary">{settings.gameMode}</span>
+            <span className="badge badge-secondary" style={{ textTransform: 'capitalize' }}>{settings.gameMode} Mode</span>
             {status === 'paused' && <span className="badge badge-warning badge-pulse">⏸ PAUSED</span>}
+            
+            <button 
+              onClick={() => useGameStore.getState().toggleAutoPlay()} 
+              className={`btn btn-xs ${settings.autoPlayEnabled ? 'btn-primary' : 'btn-ghost'}`}
+              style={{ padding: '2px 8px', fontSize: '10px', display: 'flex', alignItems: 'center', gap: 4 }}
+            >
+              Auto Play: {settings.autoPlayEnabled ? 'ON' : 'OFF'}
+            </button>
+            
+            <button 
+              onClick={() => useGameStore.getState().toggleAllLanguages()} 
+              className={`btn btn-xs ${settings.allLanguagesMode ? 'btn-primary' : 'btn-ghost'}`}
+              style={{ padding: '2px 8px', fontSize: '10px', display: 'flex', alignItems: 'center', gap: 4 }}
+            >
+              All Languages: {settings.allLanguagesMode ? 'ON' : 'OFF'}
+            </button>
           </div>
 
           {/* Current Team */}
@@ -525,15 +663,15 @@ export default function GamePlay() {
               <div style={{ display: 'flex', gap: 6, position: 'relative' }}>
                 <input className="input input-lg" value={songTitle} onChange={e => setSongTitle(e.target.value)}
                   onKeyDown={e => e.key === 'Enter' && handleSubmit()}
-                  placeholder={isRecording ? `Recording... hum your song!` : `Sing a song starting with "${currentLetter || '?'}"...`}
-                  disabled={!!validation || status !== 'playing' || isTranscribing} autoFocus
+                  placeholder={detectorState.stage !== 'idle' ? `Recording... hum your song!` : `Sing a song starting with "${currentLetter || '?'}"...`}
+                  disabled={!!validation || status !== 'playing' || detectorState.stage !== 'idle'} autoFocus
                   style={{ paddingRight: 90 }} />
                 
                 {/* Microphones Control Button */}
                 <button
-                  onClick={isRecording ? stopRecording : startRecording}
-                  disabled={!!validation || status !== 'playing' || isTranscribing}
-                  className={`btn ${isRecording ? 'btn-danger animate-pulse' : 'btn-ghost'}`}
+                  onClick={detectorState.stage !== 'idle' ? stopEngineRecognition : startEngineRecognition}
+                  disabled={!!validation || status !== 'playing'}
+                  className={`btn ${detectorState.stage !== 'idle' ? 'btn-danger animate-pulse' : 'btn-ghost'}`}
                   style={{
                     position: 'absolute',
                     right: 48,
@@ -548,9 +686,9 @@ export default function GamePlay() {
                     justifyContent: 'center',
                     zIndex: 5
                   }}
-                  title={isRecording ? 'Click to stop recording' : 'Record your song'}
+                  title={detectorState.stage !== 'idle' ? 'Click to stop recording' : 'Record your song'}
                 >
-                  {isRecording ? <MicOff size={18} /> : <Mic size={18} style={{ color: 'var(--primary-400)' }} />}
+                  {detectorState.stage !== 'idle' ? <MicOff size={18} /> : <Mic size={18} style={{ color: 'var(--primary-400)' }} />}
                 </button>
                 <Music size={20} style={{ position: 'absolute', right: 16, top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)' }} />
               </div>
@@ -568,26 +706,10 @@ export default function GamePlay() {
               )}
             </div>
 
-            {/* Recording wave duration ticker */}
-            {isRecording && (
-              <div style={{ display: 'flex', alignItems: 'center', justifySpace: 'between', padding: '6px 12px', background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.2)', borderRadius: 6, marginBottom: 'var(--space-3)', fontSize: 'var(--text-xs)' }}>
-                <span className="badge-pulse" style={{ width: 8, height: 8, borderRadius: 4, background: 'var(--error-500)', marginRight: 8 }} />
-                <span style={{ color: 'var(--error-400)', fontWeight: 'bold' }}>Recording Audio ({recordingTime}s)</span>
-                <span style={{ marginLeft: 'auto', color: 'var(--text-muted)' }}>Hum/Sing clear lyrics...</span>
-              </div>
-            )}
-
-            {isTranscribing && (
-              <div style={{ display: 'flex', alignItems: 'center', justifySpace: 'between', padding: '6px 12px', background: 'var(--gradient-primary)15', border: '1px solid rgba(124,58,237,0.3)', borderRadius: 6, marginBottom: 'var(--space-3)', fontSize: 'var(--text-xs)' }}>
-                <RefreshCw className="animate-spin" size={14} style={{ color: 'var(--primary-400)', marginRight: 8 }} />
-                <span style={{ color: 'var(--primary-300)', fontWeight: 'bold' }}>Whisper Transcribing Audio Clip...</span>
-              </div>
-            )}
-
             <div className="grid grid-3 gap-3" style={{ marginBottom: 'var(--space-4)' }}>
-              <input className="input" value={artist} onChange={e => setArtist(e.target.value)} placeholder="Artist" disabled={!!validation || isTranscribing} />
-              <input className="input" value={movie} onChange={e => setMovie(e.target.value)} placeholder="Movie" disabled={!!validation || isTranscribing} />
-              <select className="input" value={language} onChange={e => setLanguage(e.target.value)} disabled={!!validation || isTranscribing}
+              <input className="input" value={artist} onChange={e => setArtist(e.target.value)} placeholder="Artist" disabled={!!validation || detectorState.stage !== 'idle'} />
+              <input className="input" value={movie} onChange={e => setMovie(e.target.value)} placeholder="Movie" disabled={!!validation || detectorState.stage !== 'idle'} />
+              <select className="input" value={language} onChange={e => setLanguage(e.target.value)} disabled={!!validation || detectorState.stage !== 'idle'}
                 style={{ background: 'var(--glass-bg)', color: 'var(--text-primary)' }}>
                 <option value="hindi">Hindi</option>
                 <option value="english">English</option>
@@ -599,64 +721,118 @@ export default function GamePlay() {
             </div>
 
             <div className="flex gap-3">
-              <button onClick={handleSubmit} className="btn btn-primary btn-lg" style={{ flex: 1 }} disabled={!songTitle.trim() || !!validation || status !== 'playing' || isTranscribing}>
+              <button onClick={handleSubmit} className="btn btn-primary btn-lg" style={{ flex: 1 }} disabled={!songTitle.trim() || !!validation || status !== 'playing' || detectorState.stage !== 'idle'}>
                 <Send size={18} /> Submit Song
               </button>
-              <button onClick={handleSkip} className="btn btn-ghost btn-lg" disabled={!!validation || status !== 'playing' || !settings.allowSkip || isTranscribing}>
+              <button onClick={handleSkip} className="btn btn-ghost btn-lg" disabled={!!validation || status !== 'playing' || !settings.allowSkip || detectorState.stage !== 'idle'}>
                 <SkipForward size={18} /> Skip
               </button>
-              <button onClick={() => status === 'paused' ? resumeMatch() : pauseMatch()} className="btn btn-ghost btn-lg" disabled={isTranscribing}>
+              <button onClick={() => status === 'paused' ? resumeMatch() : pauseMatch()} className="btn btn-ghost btn-lg" disabled={detectorState.stage !== 'idle'}>
                 {status === 'paused' ? <Play size={18} /> : <Pause size={18} />}
               </button>
             </div>
 
-            {/* YouTube Player embedded card block */}
-            <div className="card" style={{ marginTop: 'var(--space-4)', padding: 'var(--space-3)', display: currentVideoId ? 'block' : 'none' }}>
-              <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)', marginBottom: 8, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                  <Volume2 size={12} style={{ color: 'var(--secondary-400)' }} /> YouTube Match Playback
-                </span>
-                {isPlaying ? (
-                  <span className="badge badge-success badge-pulse" style={{ fontSize: '9px', padding: '2px 6px' }}>PLAYING</span>
-                ) : (
-                  <span className="badge badge-ghost" style={{ fontSize: '9px', padding: '2px 6px' }}>LOADED</span>
-                )}
-              </div>
-              <div style={{ borderRadius: 6, overflow: 'hidden', background: '#000', display: 'flex', justifyContent: 'center' }}>
-                <div id="yt-player-element"></div>
-              </div>
-              {showPlayButton && (
-                <button className="btn btn-primary btn-sm" onClick={handleManualPlay} style={{ marginTop: 8, width: '100%' }}>
-                  ▶ Play Clip Fallback
-                </button>
-              )}
-            </div>
-
-            {/* Validation Result */}
+            {/* Premium Song Details Display */}
             <AnimatePresence>
               {validation && (
-                <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -20 }} className="card" style={{
-                  marginTop: 'var(--space-4)', padding: 'var(--space-4)',
-                  borderLeft: `4px solid ${validation.status === 'approved' ? 'var(--success-500)' : 'var(--error-500)'}`,
-                }}>
-                  <div className="flex items-center gap-3">
-                    {validation.status === 'approved' ? <CheckCircle size={24} style={{ color: 'var(--success-500)' }} /> : <XCircle size={24} style={{ color: 'var(--error-500)' }} />}
-                    <div style={{ flex: 1 }}>
-                      <div style={{ fontWeight: 'var(--font-semibold)', color: validation.status === 'approved' ? 'var(--success-400)' : 'var(--error-400)' }}>
-                        {validation.status === 'approved' ? '✓ Approved!' : '✗ Rejected'}
-                      </div>
-                      <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-secondary)' }}>{validation.reason}</div>
+                <motion.div 
+                  initial={{ opacity: 0, y: 20 }} 
+                  animate={{ opacity: 1, y: 0 }} 
+                  exit={{ opacity: 0, y: -20 }} 
+                  className="card" 
+                  style={{
+                    marginTop: 'var(--space-4)',
+                    padding: 'var(--space-4)',
+                    background: validation.status === 'approved' 
+                      ? 'linear-gradient(135deg, rgba(16, 185, 129, 0.1) 0%, rgba(6, 182, 212, 0.1) 100%)' 
+                      : 'linear-gradient(135deg, rgba(239, 68, 68, 0.1) 0%, rgba(245, 158, 11, 0.1) 100%)',
+                    border: validation.status === 'approved' 
+                      ? '1px solid rgba(16, 185, 129, 0.25)' 
+                      : '1px solid rgba(239, 68, 68, 0.25)',
+                    borderRadius: 'var(--radius-lg)'
+                  }}
+                >
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 12 }}>
+                    <div>
+                      <span className="badge" style={{
+                        background: validation.status === 'approved' ? 'rgba(16, 185, 129, 0.2)' : 'rgba(239, 68, 68, 0.2)',
+                        color: validation.status === 'approved' ? 'var(--success-400)' : 'var(--error-400)',
+                        borderColor: validation.status === 'approved' ? 'rgba(16, 185, 129, 0.4)' : 'rgba(239, 68, 68, 0.4)',
+                        borderWidth: '1px',
+                        borderStyle: 'solid',
+                        fontSize: '10px',
+                        padding: '2px 8px'
+                      }}>
+                        {validation.status === 'approved' ? '✓ APPROVED' : '✗ REJECTED'}
+                      </span>
+                      <h4 style={{ fontSize: 'var(--text-lg)', fontWeight: 'bold', color: 'var(--text-primary)', marginTop: 8, marginBottom: 4 }}>
+                        {songTitle}
+                      </h4>
+                      <p style={{ fontSize: 'var(--text-xs)', color: 'var(--text-secondary)' }}>{validation.reason}</p>
                     </div>
-                    <div style={{ textAlign: 'right' }}>
-                      <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-tertiary)' }}>Confidence</div>
-                      <div style={{ fontWeight: 'var(--font-bold)', color: validation.confidence >= 80 ? 'var(--success-400)' : validation.confidence >= 50 ? 'var(--warning-400)' : 'var(--error-400)' }}>
-                        {validation.confidence}%
+                    {validation.confidence !== undefined && (
+                      <div style={{ textAlign: 'right' }}>
+                        <div style={{ fontSize: '10px', color: 'var(--text-muted)' }}>Confidence</div>
+                        <div style={{
+                          fontSize: 'var(--text-lg)',
+                          fontWeight: 'bold',
+                          color: validation.confidence >= 70 ? 'var(--success-400)' :
+                                 validation.confidence >= 50 ? 'var(--warning-400)' : 'var(--error-400)'
+                        }}>
+                          {validation.confidence}%
+                        </div>
                       </div>
-                    </div>
+                    )}
+                  </div>
+
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '8px 12px', fontSize: 'var(--text-xs)', color: 'var(--text-secondary)', borderTop: '1px solid rgba(255,255,255,0.06)', paddingTop: 10 }}>
+                    <div>Artist: <strong style={{ color: 'var(--text-primary)' }}>{artist || 'Unknown'}</strong></div>
+                    <div>Movie: <strong style={{ color: 'var(--text-primary)' }}>{movie || 'N/A'}</strong></div>
+                    <div>Language: <strong style={{ color: 'var(--text-primary)' }}>{language || 'N/A'}</strong></div>
                   </div>
                 </motion.div>
               )}
             </AnimatePresence>
+
+            {/* YouTube Player & Admin Playback Control Panel */}
+            <div className="card" style={{ marginTop: 'var(--space-4)', padding: 'var(--space-4)', display: currentVideoId ? 'block' : 'none' }}>
+              <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)', marginBottom: 12, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <span style={{ display: 'flex', alignItems: 'center', gap: 6, fontWeight: 'bold' }}>
+                  <Volume2 size={12} style={{ color: 'var(--secondary-400)' }} /> YouTube Playback & Admin Controls
+                </span>
+                {isPlaying ? (
+                  <span className="badge badge-success badge-pulse" style={{ fontSize: '9px', padding: '2px 6px' }}>PLAYING</span>
+                ) : (
+                  <span className="badge badge-ghost" style={{ fontSize: '9px', padding: '2px 6px' }}>STOPPED</span>
+                )}
+              </div>
+              
+              <div style={{ borderRadius: 8, overflow: 'hidden', background: '#000', display: 'flex', justifyContent: 'center', marginBottom: 12 }}>
+                <div id="yt-player-element"></div>
+              </div>
+
+              {/* Admin Playback Controls */}
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, justifyContent: 'center' }}>
+                <button onClick={() => autoPlayEngine.playSong(currentVideoId, songTitle)} className="btn btn-ghost btn-sm" style={{ padding: '6px 12px', gap: 4 }} title="Play">
+                  <Play size={14} /> Play
+                </button>
+                <button onClick={() => autoPlayEngine.pause()} className="btn btn-ghost btn-sm" style={{ padding: '6px 12px', gap: 4 }} title="Pause">
+                  <Pause size={14} /> Pause
+                </button>
+                <button onClick={() => autoPlayEngine.resume()} className="btn btn-ghost btn-sm" style={{ padding: '6px 12px', gap: 4 }} title="Resume">
+                  Resume
+                </button>
+                <button onClick={() => autoPlayEngine.stop()} className="btn btn-ghost btn-sm" style={{ padding: '6px 12px', gap: 4 }} title="Stop">
+                  Stop
+                </button>
+                <button onClick={() => autoPlayEngine.replay()} className="btn btn-ghost btn-sm" style={{ padding: '6px 12px', gap: 4 }} title="Replay">
+                  Replay
+                </button>
+                <button onClick={handleNextTurn} className="btn btn-primary btn-sm" style={{ padding: '6px 16px', background: 'var(--gradient-gold)', gap: 4 }} title="Next Turn">
+                  Next Song
+                </button>
+              </div>
+            </div>
           </div>
         </main>
 
@@ -692,6 +868,14 @@ export default function GamePlay() {
           </div>
         </aside>
       </div>
+
+      <SongDetector 
+        {...detectorState} 
+        onClose={stopEngineRecognition} 
+        onApprove={handleApproveOverride}
+        onReject={handleRejectOverride}
+        onSelectAlternative={handleSelectAlternative}
+      />
 
       {/* Mobile responsive override */}
       <style>{`

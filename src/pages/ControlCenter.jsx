@@ -1,8 +1,10 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
 import { Play, Pause, Square, SkipForward, AlertTriangle, Calculator, Type, CheckCircle, XCircle, Radio, Activity, Plus, Minus, RotateCcw, Monitor, Zap, Send, Crown } from 'lucide-react';
 import { useGameStore } from '../store/gameStore';
 import { syncEngine } from '../engine/SyncEngine';
+import SongControlPanel from '../components/control/SongControlPanel.jsx';
+import { autoPlayEngine } from '../engine/AutoPlayEngine.js';
 
 function ConfirmModal({ open, title, message, onConfirm, onCancel }) {
   if (!open) return null;
@@ -29,6 +31,21 @@ export default function ControlCenter() {
   const [adjustAmount, setAdjustAmount] = useState(5);
   const [customMessage, setCustomMessage] = useState('');
   const [scoreLog, setScoreLog] = useState([]);
+  const [playbackState, setPlaybackState] = useState('idle');
+  const [volume, setVolume] = useState(80);
+
+  useEffect(() => {
+    const info = autoPlayEngine.getPlaybackInfo();
+    setPlaybackState(info.state);
+    setVolume(info.volume);
+    
+    const interval = setInterval(() => {
+      const currentInfo = autoPlayEngine.getPlaybackInfo();
+      setPlaybackState(currentInfo.state);
+      setVolume(currentInfo.volume);
+    }, 1000);
+    return () => clearInterval(interval);
+  }, []);
 
   const doAdjust = (teamId, delta) => {
     store.adjustScore(teamId, delta);
@@ -174,6 +191,73 @@ export default function ControlCenter() {
               <button onClick={() => syncEngine.sendCommand('show-celebration', { text: '🎉 CELEBRATION! 🎉' })} className="btn btn-gold" style={{ width: '100%' }}><Crown size={16} /> Trigger Celebration</button>
               <button onClick={openBigScreen} className="btn btn-ghost" style={{ width: '100%' }}><Monitor size={16} /> Open Big Screen</button>
             </div>
+          </div>
+
+          {/* Song Control Panel */}
+          <div className="control-section">
+            <SongControlPanel
+              playbackState={playbackState}
+              playbackMode={settings.recognitionMode}
+              currentDetection={store.currentDetection}
+              autoPlayEnabled={settings.autoPlayEnabled}
+              allLanguagesMode={settings.allLanguagesMode}
+              playbackDuration={settings.playbackDuration}
+              volume={volume}
+              onPlay={() => {
+                if (store.currentDetection?.songName) {
+                  autoPlayEngine.playSong('', store.currentDetection.songName);
+                }
+              }}
+              onPause={() => autoPlayEngine.pause()}
+              onResume={() => autoPlayEngine.resume()}
+              onStop={() => autoPlayEngine.stop()}
+              onReplay={() => autoPlayEngine.replay()}
+              onSkip={() => autoPlayEngine.skip()}
+              onApprove={() => {
+                if (store.currentDetection) {
+                  const songId = store.submitSong({
+                    songTitle: store.currentDetection.songName,
+                    artist: store.currentDetection.artist,
+                    movie: store.currentDetection.movie,
+                    language: store.currentDetection.language
+                  });
+                  if (songId) {
+                    store.approveSong(songId);
+                    store.clearDetection();
+                  }
+                }
+              }}
+              onReject={() => {
+                if (store.currentDetection) {
+                  const songId = store.submitSong({
+                    songTitle: store.currentDetection.songName,
+                    artist: store.currentDetection.artist,
+                    movie: store.currentDetection.movie,
+                    language: store.currentDetection.language
+                  });
+                  if (songId) {
+                    store.rejectSong(songId);
+                    store.clearDetection();
+                  }
+                }
+              }}
+              onManualSearch={(title) => {
+                store.submitDetection({
+                  songName: title,
+                  confidence: 100,
+                  language: 'all',
+                  alternatives: []
+                });
+              }}
+              onToggleAutoPlay={() => store.toggleAutoPlay()}
+              onToggleAllLanguages={() => store.toggleAllLanguages()}
+              onSetPlaybackMode={(mode) => store.setRecognitionMode(mode)}
+              onSetPlaybackDuration={(seconds) => store.setPlaybackDuration(seconds)}
+              onSetVolume={(vol) => {
+                setVolume(vol);
+                autoPlayEngine.setVolume(vol);
+              }}
+            />
           </div>
 
           {/* Match Monitor */}
